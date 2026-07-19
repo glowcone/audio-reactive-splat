@@ -35,6 +35,14 @@
   #mLow  { background: linear-gradient(90deg,#2563eb,#38bdf8); }
   #mMid  { background: linear-gradient(90deg,#8b5cf6,#c084fc); }
   #mHigh { background: linear-gradient(90deg,#f59e0b,#fde68a); }
+  .analysis { margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.08); }
+  .analysis .datum { display: flex; justify-content: space-between; gap: 10px; color: #8b96a3; }
+  .analysis .datum b { color: #dfe6ee; font-family: ui-monospace, monospace; font-weight: 500; }
+  #beat.beat { color: #7fd6a3; }
+  #chroma { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; margin-top: 5px; height: 14px; }
+  #chroma i { background: #8b5cf6; border-radius: 2px; transform: scaleY(.08); transform-origin: bottom; }
+  .slow-state { margin-top: 8px; padding-top: 7px; border-top: 1px dashed rgba(255,255,255,.1); }
+  .slow-state .pending { color: #8b96a3; }
 
   #controls { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; gap: 8px; align-items: center; }
   .btn {
@@ -125,6 +133,20 @@
     <div class="m"><span>mid</span><div class="mbar"><i id="mMid"></i></div></div>
     <div class="m"><span>high</span><div class="mbar"><i id="mHigh"></i></div></div>
   </div>
+  <div class="analysis">
+    <div class="datum"><span>volume</span><b id="volume">0.00</b></div>
+    <div class="datum"><span>onset</span><b id="beat">–</b></div>
+    <div class="datum"><span>centroid</span><b id="centroid">0 Hz</b></div>
+    <div class="datum"><span>class</span><b id="audioClass">–</b></div>
+    <div class="datum"><span>chroma</span><b id="chromaKey">–</b></div>
+    <div id="chroma" title="C through B chroma energy"></div>
+    <div class="slow-state">
+      <div class="datum"><span>genre</span><b id="genre" class="pending">loading model…</b></div>
+      <div class="datum"><span>mood</span><b id="mood">–</b></div>
+      <div class="datum"><span>instrument</span><b id="instrument">–</b></div>
+      <label><input type="checkbox" id="autoVisuals" checked /> Genre controls visuals</label>
+    </div>
+  </div>
 </div>
 
 <div id="status"><span id="statusText">Working…</span><div class="bar"><i id="statusBar"></i></div></div>
@@ -135,7 +157,19 @@
 </div>
 
 <div id="controls">
-  <button class="btn" id="mic" title="Use microphone as input">🎤 Enable mic</button>
+  <select id="audioInput" title="Microphone or mixer audio input"><option value="default">Default audio input</option></select>
+  <button class="btn" id="mic" title="Use a microphone, mixer, or audio interface">🎤 Enable audio</button>
+  <button class="btn" id="systemAudio" title="Capture audio from a shared browser tab or system screen">🖥️ System audio</button>
+  <button class="btn" id="midi" title="Connect a DJ controller via Web MIDI">🎚️ MIDI</button>
+  <select id="midiTarget" title="Destination for the next learned MIDI control">
+    <option value="deck-a-volume">Deck A volume</option>
+    <option value="deck-b-volume">Deck B volume</option>
+    <option value="crossfader">Crossfader</option>
+    <option value="deck-a-effect">Deck A effect</option>
+    <option value="deck-b-effect">Deck B effect</option>
+    <option value="master-effect">Master effect</option>
+  </select>
+  <button class="btn" id="midiLearn" title="Move a controller after clicking">Map next CC</button>
   <button class="btn" id="toggleShader" title="Show/hide shader controls">🎛️ Shader</button>
   <select id="panoRes" title="Panorama resolution">
     <option value="2048">2K · 2048×1024</option>
@@ -168,6 +202,7 @@
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh, dyno } from "@sparkjsdev/spark";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
+import { AudioAnalysis } from "./audio-analysis.js?v=2";
 
 // ---------- worlds: rekordbox genre → splat ----------
 // Keys are rekordbox Genre values, lowercased. "default" is shown at startup
@@ -212,6 +247,7 @@ const animateT   = dyno.dynoFloat(0);
 const uBass      = dyno.dynoFloat(0);
 const uMid       = dyno.dynoFloat(0);
 const uTreble    = dyno.dynoFloat(0);
+const uVolume    = dyno.dynoFloat(0);
 const uIntensity = dyno.dynoFloat(0.35);  // master reactivity
 // adjustable shader options (driven by sliders below)
 const uBassAmt   = dyno.dynoFloat(0.70);
@@ -221,10 +257,17 @@ const uWaveFreq  = dyno.dynoFloat(0.89);
 const uColorAmt  = dyno.dynoFloat(0.85);
 const uSparkleAmt= dyno.dynoFloat(0.35);
 const uSpeed     = dyno.dynoFloat(1.15);
+const uChromaThreshold = dyno.dynoFloat(0.45);
+const uLowColorGate = dyno.dynoFloat(0);
+const uMidColorGate = dyno.dynoFloat(0);
+const uSparkleColorGate = dyno.dynoFloat(0);
 // color options
 const uMidColor     = dyno.dynoVec3(new THREE.Vector3(0.55, 0.25, 0.9));
 const uBassColor    = dyno.dynoVec3(new THREE.Vector3(0.15, 0.4, 1.0));
 const uSparkleColor = dyno.dynoVec3(new THREE.Vector3(1.0, 1.0, 1.0));
+const uMoodColor    = dyno.dynoVec3(new THREE.Vector3(0.25, 0.35, 0.65));
+const uMoodColorAmt = dyno.dynoFloat(0.25);
+
 // same audio-reactive shader for every world; each mesh gets its own fade
 // (crossfade opacity) and ctr (pulse centroid) uniforms
 function buildWorldModifier(uFade, uCtr) {
@@ -235,11 +278,13 @@ function buildWorldModifier(uFade, uCtr) {
     const d = new dyno.Dyno({
       inTypes: {
         gsplat: dyno.Gsplat, t: "float",
-        bass: "float", mid: "float", treble: "float", intensity: "float",
+        bass: "float", mid: "float", treble: "float", volume: "float", intensity: "float",
         bassAmt: "float", midAmt: "float", trebleAmt: "float",
         waveFreq: "float", colorAmt: "float", sparkleAmt: "float", speed: "float",
         midColor: "vec3", bassColor: "vec3", sparkleColor: "vec3",
         fade: "float", worldCtr: "vec3",
+        moodColor: "vec3", moodColorAmt: "float", chromaThreshold: "float",
+        lowColorGate: "float", midColorGate: "float", sparkleColorGate: "float",
       },
       outTypes: { gsplat: dyno.Gsplat },
       globals: () => [
@@ -252,17 +297,29 @@ function buildWorldModifier(uFade, uCtr) {
           }
           mat2 rot(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
 
-          // kaleidoscopic fractal folding -> pattern in [0,1], animated by t
-          float fractalField(vec3 pos, float t) {
-            float m = 100.0;
-            vec3 p = pos * 0.14;
-            for (int i = 0; i < 6; i++) {
-              p = abs(p) / clamp(abs(p.x * p.y), 0.3, 3.0) - 1.0;
-              p.xy *= rot(radians(90.0));
-              if (i > 1) m = min(m, length(p.xy) +
-                step(0.3, fract(p.z * 0.5 + t * 0.4 + float(i) * 0.2)));
+          // Adapted from Morphlab's MIT-licensed fractalBreathing effect.
+          float morphLabFractalBreathField(vec3 p, float phase, float frequency) {
+            vec3 q = p * frequency;
+            float total = 0.0;
+            float amplitude = 0.58;
+            for (int i = 0; i < 4; i++) {
+              q = fract(q * 1.55) - 0.5;
+              float d = length(q) * exp(-length(p) * 0.18);
+              d = abs(sin(d * 8.0 + phase));
+              total += pow(0.018 / max(d, 0.025), 1.08) * amplitude;
+              amplitude *= 0.48;
             }
-            return step(m, 0.5);
+            return clamp(total, 0.0, 1.0);
+          }
+          vec3 morphLabFractalBreathOffset(vec3 p, float field, float phase, float displacement, float frequency) {
+            vec3 radialDirection = normalize(p + vec3(0.0001, 0.0002, 0.0003));
+            float breath = sin(phase);
+            vec3 ripple = vec3(
+              sin(p.y * frequency * 2.7 + phase),
+              sin(p.z * frequency * 2.1 + phase * 1.17),
+              sin(p.x * frequency * 2.4 - phase * 0.91)
+            );
+            return (radialDirection * breath + ripple * 0.38) * displacement * field;
           }
         `),
       ],
@@ -276,8 +333,10 @@ function buildWorldModifier(uFade, uCtr) {
         float bass   = ${inputs.bass};
         float mid    = ${inputs.mid};
         float treble = ${inputs.treble};
+        float volume = ${inputs.volume};
         float amp    = ${inputs.intensity};
         float t      = ${inputs.t} * ${inputs.speed};
+        float volumeDrive = clamp(volume, 0.0, 1.0);
 
         // scene centroid (raw splat coords, per world) so pulses stay in place
         vec3 ctr = ${inputs.worldCtr};
@@ -287,39 +346,52 @@ function buildWorldModifier(uFade, uCtr) {
         float wf = ${inputs.waveFreq};
 
         // --- LOWS: breathing SCALE about the centroid (pulse in place) ---
-        float grow = bass * ${inputs.bassAmt} * amp;
+        float grow = bass * ${inputs.bassAmt} * amp * volumeDrive;
         c = ctr + rel * (1.0 + 0.18 * grow);
 
         // --- MIDS: concentric radial ripples (net-zero translation) ---
         float ripple = sin(dist * wf * 3.0 - t * 3.0);
-        c += dir * ripple * mid * ${inputs.midAmt} * amp;
+        c += dir * ripple * mid * ${inputs.midAmt} * amp * volumeDrive;
 
         // --- HIGHS: per-splat shimmer / jitter (already localized) ---
         vec3 n = hash3(floor(c * 3.0)) * 2.0 - 1.0;
-        c += n * treble * ${inputs.trebleAmt} * amp * (0.5 + 0.5 * sin(t * 30.0));
+        c += n * treble * ${inputs.trebleAmt} * amp * volumeDrive * (0.5 + 0.5 * sin(t * 30.0));
+
+        // Morphlab-style breathing: RMS volume is the displacement master.
+        float effectRadius = 50.0;
+        float radialFalloff = 1.0 - smoothstep(effectRadius * 0.35, effectRadius, dist);
+        float morphField = morphLabFractalBreathField(rel / effectRadius, t, max(0.2, wf * 2.0));
+        float weightedField = morphField * radialFalloff;
+        c += morphLabFractalBreathOffset(rel, weightedField, t, volumeDrive * amp, max(0.2, wf));
 
         // --- color reaction ---
-        float f = fractalField(rel, t);
         vec3 col = rgba.rgb;
-        col += ${inputs.midColor} * f * mid * ${inputs.colorAmt};       // mids paint fractal color
-        col += ${inputs.bassColor} * bass * 0.5 * ${inputs.colorAmt};   // lows add a glow
+        col = mix(col, ${inputs.moodColor}, clamp(${inputs.moodColorAmt} * weightedField, 0.0, 0.7));
+        float lowGate = smoothstep(${inputs.chromaThreshold}, ${inputs.chromaThreshold} + 0.18, ${inputs.lowColorGate});
+        float midGate = smoothstep(${inputs.chromaThreshold}, ${inputs.chromaThreshold} + 0.18, ${inputs.midColorGate});
+        float highGate = smoothstep(${inputs.chromaThreshold}, ${inputs.chromaThreshold} + 0.18, ${inputs.sparkleColorGate});
+        col += ${inputs.midColor} * morphField * mid * ${inputs.colorAmt} * midGate;
+        col += ${inputs.bassColor} * bass * 0.5 * ${inputs.colorAmt} * lowGate;
         float sparkle = step(0.9, hash3(floor(c * 5.0) + floor(t * 20.0)).x)
-          * treble * ${inputs.sparkleAmt};
+          * treble * ${inputs.sparkleAmt} * highGate;
         col = mix(col, ${inputs.sparkleColor}, clamp(sparkle, 0.0, 1.0));
 
         ${outputs.gsplat}.center = c;
         ${outputs.gsplat}.rgba   = vec4(col, rgba.a * ${inputs.fade});   // crossfade opacity
-        ${outputs.gsplat}.scales = scales * (1.0 + bass * 0.3 * amp + sparkle * 1.5);
+        ${outputs.gsplat}.scales = scales * (1.0 + bass * 0.3 * amp * volumeDrive + sparkle * 1.5);
       `),
     });
 
     gsplat = d.apply({
       gsplat, t: animateT,
-      bass: uBass, mid: uMid, treble: uTreble, intensity: uIntensity,
+      bass: uBass, mid: uMid, treble: uTreble, volume: uVolume, intensity: uIntensity,
       bassAmt: uBassAmt, midAmt: uMidAmt, trebleAmt: uTrebleAmt,
       waveFreq: uWaveFreq, colorAmt: uColorAmt, sparkleAmt: uSparkleAmt, speed: uSpeed,
       midColor: uMidColor, bassColor: uBassColor, sparkleColor: uSparkleColor,
       fade: uFade, worldCtr: uCtr,
+      moodColor: uMoodColor, moodColorAmt: uMoodColorAmt,
+      chromaThreshold: uChromaThreshold, lowColorGate: uLowColorGate,
+      midColorGate: uMidColorGate, sparkleColorGate: uSparkleColorGate,
     }).gsplat;
     return { gsplat };
   }
@@ -432,79 +504,138 @@ function connectBridge() {
 }
 connectBridge();
 
-// ---------- mic + 3-band FFT analysis ----------
-let audioOn = false, analyser = null, freqData = null, actx = null;
-let bBass = 0, bMid = 0, bTreble = 0;
-let bassRange = [1, 1], midRange = [1, 1], trebleRange = [1, 1];
-
-// audio-processing settings (driven by sliders)
-const audioCfg = {
-  bassGain: 1.0, midGain: 1.0, trebleGain: 1.1,
-  gate: 0.06, contrast: 2.6, attack: 0.9, release: 0.18, smoothing: 0.25,
-};
-
+// ---------- audio analysis bridge (implementation lives in audio-analysis.js) ----------
+const audioAnalysis = new AudioAnalysis();
 const micBtn = document.getElementById("mic");
 const meterLow = document.getElementById("mLow");
 const meterMid = document.getElementById("mMid");
 const meterHigh = document.getElementById("mHigh");
+const audioInput = document.getElementById("audioInput");
+const beatEl = document.getElementById("beat");
+const chromaBars = Array.from({ length: 12 }, () => document.createElement("i"));
+document.getElementById("chroma").append(...chromaBars);
 
-async function enableMic() {
-  if (audioOn) return;
+async function refreshAudioInputs() {
+  const devices = await audioAnalysis.listInputs();
+  const selected = audioInput.value;
+  audioInput.replaceChildren(new Option("Default audio input", "default"));
+  devices.forEach((device, index) => audioInput.add(new Option(device.label || `Audio input ${index + 1}`, device.deviceId)));
+  if ([...audioInput.options].some(option => option.value === selected)) audioInput.value = selected;
+}
+
+async function enableAudio() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-    });
-    actx = new (window.AudioContext || window.webkitAudioContext)();
-    if (actx.state === "suspended") await actx.resume();
-    const src = actx.createMediaStreamSource(stream);
-    analyser = actx.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = audioCfg.smoothing;   // low = transients/beats come through
-    src.connect(analyser);                 // NOT to destination — avoids mic feedback
-    freqData = new Uint8Array(analyser.frequencyBinCount);
-
-    const binHz = actx.sampleRate / analyser.fftSize;
-    const bin = hz => Math.max(1, Math.min(analyser.frequencyBinCount - 1, Math.round(hz / binHz)));
-    bassRange   = [bin(20),   bin(250)];
-    midRange    = [bin(250),  bin(2000)];
-    trebleRange = [bin(2000), bin(8000)];
-
-    audioOn = true;
-    micBtn.textContent = "🎤 Mic on";
+    micBtn.textContent = "Starting…";
+    await audioAnalysis.start(audioInput.value);
+    await refreshAudioInputs();
+    micBtn.textContent = "🎤 Audio on";
     micBtn.classList.add("accent");
   } catch (e) {
-    console.error("mic error", e);
-    micBtn.textContent = "🎤 Mic blocked";
+    console.error("audio input error", e);
+    micBtn.textContent = "🎤 Audio blocked";
   }
 }
-micBtn.addEventListener("click", enableMic);
+micBtn.addEventListener("click", enableAudio);
+const systemAudioBtn = document.getElementById("systemAudio");
+systemAudioBtn.addEventListener("click", async () => {
+  try {
+    systemAudioBtn.textContent = "Choose a tab…";
+    await audioAnalysis.startSystemAudio();
+    systemAudioBtn.textContent = "🖥️ System audio on";
+    systemAudioBtn.classList.add("accent");
+    micBtn.classList.remove("accent");
+  } catch (e) {
+    console.error("system audio error", e);
+    systemAudioBtn.textContent = "🖥️ No shared audio";
+  }
+});
+audioInput.addEventListener("change", () => { if (micBtn.classList.contains("accent")) enableAudio(); });
+navigator.mediaDevices?.addEventListener("devicechange", refreshAudioInputs);
+refreshAudioInputs();
 
-const avgBand = ([a, b]) => {
-  let s = 0; for (let i = a; i <= b; i++) s += freqData[i];
-  return s / (b - a + 1) / 255;            // 0..1
+audioAnalysis.addEventListener("features", ({ detail: f }) => {
+  uBass.value = f.bass; uMid.value = f.mid; uTreble.value = f.treble;
+  uVolume.value = f.volume;
+  // Pitch-class groups gate the three genre palette accents.
+  const chromaMax = indices => Math.max(0, ...indices.map(index => f.chroma[index] || 0));
+  uLowColorGate.value = chromaMax([0, 2, 4]);          // C, D, E
+  uMidColorGate.value = chromaMax([5, 7, 9]);          // F, G, A
+  uSparkleColorGate.value = chromaMax([1, 3, 6, 8, 10, 11]); // accidentals + B
+  meterLow.style.width = Math.min(100, f.bass * 66) + "%";
+  meterMid.style.width = Math.min(100, f.mid * 66) + "%";
+  meterHigh.style.width = Math.min(100, f.treble * 66) + "%";
+  document.getElementById("volume").textContent = f.volume.toFixed(2);
+  document.getElementById("centroid").textContent = `${Math.round(f.centroidHz)} Hz`;
+  document.getElementById("audioClass").textContent = f.classification;
+  document.getElementById("chromaKey").textContent = f.dominantChroma;
+  chromaBars.forEach((bar, index) => bar.style.transform = `scaleY(${Math.max(0.08, f.chroma[index] || 0)})`);
+  beatEl.textContent = f.beat ? "BEAT" : "–";
+  beatEl.classList.toggle("beat", f.beat);
+});
+
+audioAnalysis.addEventListener("classifierstate", ({ detail }) => {
+  const genreEl = document.getElementById("genre");
+  genreEl.textContent = detail.ready ? "listening…" : "model unavailable";
+  genreEl.classList.toggle("pending", !detail.ready);
+});
+
+const genrePalettes = {
+  electronic: [0x2563eb, 0x8b5cf6, 0xffffff], electronica: [0x0ea5e9, 0x7c3aed, 0xe0f2fe], electro: [0x06b6d4, 0xd946ef, 0xffffff],
+  dance: [0x06b6d4, 0xec4899, 0xfef08a], House: [0x2563eb, 0xd946ef, 0xffffff], ambient: [0x0891b2, 0x4f46e5, 0xa5f3fc],
+  rock: [0xdc2626, 0xf97316, 0xfef3c7], "alternative rock": [0xbe123c, 0xea580c, 0xfde68a], "classic rock": [0xb91c1c, 0xd97706, 0xfef3c7],
+  "indie rock": [0xe11d48, 0x7c3aed, 0xfbcfe8], "hard rock": [0x991b1b, 0xdc2626, 0xfbbf24], "Progressive rock": [0x7c2d12, 0x7e22ce, 0xfef08a],
+  metal: [0x52525b, 0xdc2626, 0xffffff], "heavy metal": [0x27272a, 0xb91c1c, 0xfacc15], punk: [0xdb2777, 0x84cc16, 0xffffff],
+  pop: [0xec4899, 0x8b5cf6, 0xffffff], "indie pop": [0xf472b6, 0x818cf8, 0xfef3c7], indie: [0xc026d3, 0x4f46e5, 0xf5d0fe],
+  jazz: [0x7c3aed, 0xd97706, 0xfef3c7], blues: [0x1d4ed8, 0x6366f1, 0xbfdbfe], soul: [0x9333ea, 0xf59e0b, 0xfef3c7],
+  funk: [0xf59e0b, 0xdb2777, 0xd9f99d], "Hip-Hop": [0xf59e0b, 0x7c3aed, 0xffffff], rnb: [0x7e22ce, 0xec4899, 0xfce7f3],
+  folk: [0x65a30d, 0xd97706, 0xfef3c7], country: [0x92400e, 0xf59e0b, 0xfef3c7], experimental: [0x14b8a6, 0xf43f5e, 0xe0e7ff],
 };
-
-// noise-gate + contrast curve: kill the constant floor, expand so beats spike
-// and quiet passages fall to ~0 -> obvious pulsing instead of a steady hum.
-const shape = (v, gain) => {
-  v = Math.max(0, v * gain - audioCfg.gate);
-  return Math.min(1.6, Math.pow(v, audioCfg.contrast) * 2.6);
+const moodColors = {
+  happy: 0xfacc15, party: 0xec4899, catchy: 0xf472b6, beautiful: 0xc4b5fd,
+  chill: 0x67e8f9, chillout: 0x22d3ee, Mellow: 0x5eead4, "easy listening": 0xfde68a,
+  sad: 0x60a5fa, sexy: 0xfb7185,
 };
+const setDynoColor = (uniform, hex) => {
+  const color = new THREE.Color(hex).convertSRGBToLinear();
+  uniform.value = new THREE.Vector3(color.r, color.g, color.b);
+};
+audioAnalysis.addEventListener("classification", ({ detail }) => {
+  document.getElementById("genre").textContent = `${detail.genre.label} ${Math.round(detail.genre.confidence * 100)}%`;
+  document.getElementById("mood").textContent = detail.mood.label;
+  document.getElementById("instrument").textContent = detail.instrument.label;
+  if (!document.getElementById("autoVisuals").checked) return;
+  const palette = genrePalettes[detail.genre.label] || [0x3b82f6, 0x8b5cf6, 0xffffff];
+  setDynoColor(uBassColor, palette[0]); setDynoColor(uMidColor, palette[1]); setDynoColor(uSparkleColor, palette[2]);
+  setDynoColor(uMoodColor, moodColors[detail.mood.label] || 0x818cf8);
+  uMoodColorAmt.value = Math.min(0.6, Math.max(0.15, detail.mood.confidence * 0.75));
+  const energetic = ["party", "happy", "catchy", "dance"].includes(detail.mood.label);
+  const calm = ["chill", "chillout", "Mellow", "easy listening", "sad"].includes(detail.mood.label);
+  uSpeed.value = energetic ? 1.7 : calm ? 0.7 : 1.15;
+  uSparkleAmt.value = detail.instrument.label.includes("vocal") ? 0.7 : detail.instrument.label === "guitar" ? 0.5 : 0.35;
+});
 
-function updateAudio() {
-  if (!audioOn) return;
-  analyser.getByteFrequencyData(freqData);
-  const tB = shape(avgBand(bassRange),   audioCfg.bassGain);
-  const tM = shape(avgBand(midRange),    audioCfg.midGain);
-  const tT = shape(avgBand(trebleRange), audioCfg.trebleGain);
-  // envelope: fast attack (snap on the beat), quick release (visible pump)
-  const env = (p, x) => x > p ? p + (x - p) * audioCfg.attack : p + (x - p) * audioCfg.release;
-  bBass = env(bBass, tB); bMid = env(bMid, tM); bTreble = env(bTreble, tT);
-  uBass.value = bBass; uMid.value = bMid; uTreble.value = bTreble;
-  meterLow.style.width  = Math.min(100, bBass   * 66) + "%";
-  meterMid.style.width  = Math.min(100, bMid    * 66) + "%";
-  meterHigh.style.width = Math.min(100, bTreble * 66) + "%";
-}
+const midiBtn = document.getElementById("midi");
+midiBtn.addEventListener("click", async () => {
+  try { await audioAnalysis.enableMidi(); midiBtn.classList.add("accent"); }
+  catch (e) { console.error("MIDI error", e); midiBtn.textContent = "🎚️ MIDI unavailable"; }
+});
+audioAnalysis.addEventListener("midistatechange", ({ detail }) => {
+  midiBtn.textContent = detail.inputs.length ? `🎚️ MIDI (${detail.inputs.length})` : "🎚️ MIDI (none)";
+});
+const midiLearnBtn = document.getElementById("midiLearn");
+midiLearnBtn.addEventListener("click", () => {
+  audioAnalysis.learnMidi(document.getElementById("midiTarget").value);
+  midiLearnBtn.textContent = "Move a control…";
+  midiLearnBtn.classList.add("accent");
+});
+audioAnalysis.addEventListener("midimapping", ({ detail }) => {
+  midiLearnBtn.textContent = `Mapped CC ${detail.controller}`;
+  midiLearnBtn.classList.remove("accent");
+});
+// Consumers can map controller messages by listening for this event.
+audioAnalysis.addEventListener("midi", ({ detail }) => {
+  window.dispatchEvent(new CustomEvent("djcontrol", { detail }));
+});
 
 // ---------- shader control panel ----------
 const SHADER_PARAMS = [
@@ -516,6 +647,7 @@ const SHADER_PARAMS = [
   { u: uColorAmt,  label: "Color amount",      min: 0, max: 3,   step: 0.05, def: 0.85 },
   { u: uSparkleAmt,label: "High sparkle",      min: 0, max: 3,   step: 0.05, def: 0.35 },
   { u: uSpeed,     label: "Animation speed",   min: 0, max: 3,   step: 0.05, def: 1.15 },
+  { u: uChromaThreshold, label: "Chroma color gate", min: 0, max: 0.9, step: 0.01, def: 0.45 },
 ];
 
 const slidersEl = document.getElementById("shaderSliders");
@@ -600,9 +732,8 @@ for (const p of AUDIO_PARAMS) {
   input.min = p.min; input.max = p.max; input.step = p.step; input.value = p.def;
   input.addEventListener("input", () => {
     const v = parseFloat(input.value);
-    audioCfg[p.key] = v;
+    audioAnalysis.setConfig(p.key, v);
     val.textContent = v.toFixed(2);
-    if (p.key === "smoothing" && analyser) analyser.smoothingTimeConstant = v;
   });
   p._input = input; p._val = val;
   row.append(lbl, input);
@@ -620,10 +751,9 @@ document.getElementById("shaderReset").addEventListener("click", () => {
     p._input.value = v2hex(p.def);
   }
   for (const p of AUDIO_PARAMS) {
-    audioCfg[p.key] = p.def;
+    audioAnalysis.setConfig(p.key, p.def);
     p._input.value = p.def;
     p._val.textContent = p.def.toFixed(2);
-    if (p.key === "smoothing" && analyser) analyser.smoothingTimeConstant = p.def;
   }
 });
 
@@ -688,8 +818,7 @@ renderer.setAnimationLoop(() => {
   last = now;
   if (capturing) return;               // capture routine drives its own renders
   if (controls.isLocked) updateMove(dt);
-  updateAudio();
-  tickFade(dt);
+  tickFade(dt);   // advance world crossfade; audio uniforms are pushed by the AudioAnalysis "features" event
   animateT.value = now / 1000;
   // push uniform changes into the splat shaders of every world in the scene
   for (const entry of meshCache.values())
