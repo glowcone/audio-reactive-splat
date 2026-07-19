@@ -110,7 +110,12 @@
   <div class="row"><kbd>P</kbd> capture 360° panorama here</div>
   <div class="row"><kbd>Esc</kbd> release mouse</div>
   <div class="row muted" style="margin-top:8px">pos <span id="pos" class="pos">–</span></div>
+  <div class="row muted" style="margin-top:4px">♪ <span id="nowPlaying">waiting for bridge…</span></div>
   <label><input type="checkbox" id="flip" checked /> Z-up → Y-up (Blender fix)</label>
+  <div class="srow" style="margin-top:10px">
+    <div class="lbl"><span>🌐 World crossfade</span><b id="xfadeVal">0%</b></div>
+    <input type="range" id="xfade" min="0" max="1" step="0.01" value="0" style="width:100%;accent-color:#a855f7" />
+  </div>
   <div class="srow" style="margin-top:10px">
     <div class="lbl"><span>Fly speed</span><b id="flySpeedVal">6</b></div>
     <input type="range" id="flySpeed" min="1" max="60" step="1" value="6" style="width:100%;accent-color:#2563eb" />
@@ -164,7 +169,25 @@ import * as THREE from "three";
 import { SparkRenderer, SplatMesh, dyno } from "@sparkjsdev/spark";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
-const SPLAT_URL = "../gaussian/point_cloud_1.ply";
+// ---------- worlds: rekordbox genre → splat ----------
+// Keys are rekordbox Genre values, lowercased. "default" is shown at startup
+// and whenever a track's genre has no mapping the current world just stays.
+//   url:  splat file
+//   flip: file is Z-up, rotate to Y-up (the Blender-exported PLY needs this)
+//   y:    vertical offset to align worlds
+//   ctr:  point (raw splat coords, before flip/offset) the audio pulses stay
+//         centered on — set per world or the bass "breathing" drifts sideways
+const WORLDS = {
+  "default": { url: "../gaussian/point_cloud_1.ply", flip: true,  y: 0,    ctr: [8.342, 8.314, 1.009] },
+  "jungle":   { url: "../gaussian/world1.spz",        flip: false, y: -1.5, ctr: [0, 0, 0] },
+  "mushroom": { url: "../gaussian/world2.spz",        flip: false, y: -1.5, ctr: [0, 0, 0] },
+  "candy":    { url: "../gaussian/world3.spz",        flip: false, y: -1.5, ctr: [0, 0, 0] },
+  "techno":   { url: "../gaussian/world4.spz",        flip: false, y: -1.5, ctr: [0, 0, 0] },
+};
+const XFADE_SECONDS = 8;
+const PRELOAD_ALL = true;   // fetch every world up front so switches start instantly
+// bridge address — override with ?ws=ws://192.168.1.42:8765 in the page URL
+const WS_URL = new URLSearchParams(location.search).get("ws") || "ws://localhost:8765";
 
 // ---------- renderer / scene ----------
 const app = document.getElementById("app");
@@ -182,18 +205,6 @@ camera.lookAt(0, 0, -1);
 
 const spark = new SparkRenderer({ renderer });
 scene.add(spark);
-
-// ---------- load splat ----------
-const splats = new SplatMesh({ url: SPLAT_URL });
-applyFlip(true);
-scene.add(splats);
-
-function applyFlip(on) {
-  // Blender/PLY is Z-up; THREE is Y-up. -90° about X maps +Z -> +Y.
-  if (on) splats.quaternion.set(-0.7071067811865476, 0, 0, 0.7071067811865476);
-  else splats.quaternion.set(0, 0, 0, 1);
-}
-document.getElementById("flip").addEventListener("change", e => applyFlip(e.target.checked));
 
 // ---------- audio-reactive fractal shader (Spark dyno graph) ----------
 // Per-splat uniforms updated every frame from the mic FFT.
@@ -214,8 +225,10 @@ const uSpeed     = dyno.dynoFloat(1.15);
 const uMidColor     = dyno.dynoVec3(new THREE.Vector3(0.55, 0.25, 0.9));
 const uBassColor    = dyno.dynoVec3(new THREE.Vector3(0.15, 0.4, 1.0));
 const uSparkleColor = dyno.dynoVec3(new THREE.Vector3(1.0, 1.0, 1.0));
-
-splats.objectModifier = dyno.dynoBlock(
+// same audio-reactive shader for every world; each mesh gets its own fade
+// (crossfade opacity) and ctr (pulse centroid) uniforms
+function buildWorldModifier(uFade, uCtr) {
+  return dyno.dynoBlock(
   { gsplat: dyno.Gsplat },
   { gsplat: dyno.Gsplat },
   ({ gsplat }) => {
@@ -226,6 +239,7 @@ splats.objectModifier = dyno.dynoBlock(
         bassAmt: "float", midAmt: "float", trebleAmt: "float",
         waveFreq: "float", colorAmt: "float", sparkleAmt: "float", speed: "float",
         midColor: "vec3", bassColor: "vec3", sparkleColor: "vec3",
+        fade: "float", worldCtr: "vec3",
       },
       outTypes: { gsplat: dyno.Gsplat },
       globals: () => [
@@ -265,8 +279,8 @@ splats.objectModifier = dyno.dynoBlock(
         float amp    = ${inputs.intensity};
         float t      = ${inputs.t} * ${inputs.speed};
 
-        // scene centroid (raw PLY coords) so pulses stay in place
-        vec3 ctr = vec3(8.342, 8.314, 1.009);
+        // scene centroid (raw splat coords, per world) so pulses stay in place
+        vec3 ctr = ${inputs.worldCtr};
         vec3 rel  = c - ctr;
         float dist = length(rel);
         vec3 dir = dist > 1e-4 ? rel / dist : vec3(0.0);
@@ -294,7 +308,7 @@ splats.objectModifier = dyno.dynoBlock(
         col = mix(col, ${inputs.sparkleColor}, clamp(sparkle, 0.0, 1.0));
 
         ${outputs.gsplat}.center = c;
-        ${outputs.gsplat}.rgba   = vec4(col, rgba.a);
+        ${outputs.gsplat}.rgba   = vec4(col, rgba.a * ${inputs.fade});   // crossfade opacity
         ${outputs.gsplat}.scales = scales * (1.0 + bass * 0.3 * amp + sparkle * 1.5);
       `),
     });
@@ -305,11 +319,118 @@ splats.objectModifier = dyno.dynoBlock(
       bassAmt: uBassAmt, midAmt: uMidAmt, trebleAmt: uTrebleAmt,
       waveFreq: uWaveFreq, colorAmt: uColorAmt, sparkleAmt: uSparkleAmt, speed: uSpeed,
       midColor: uMidColor, bassColor: uBassColor, sparkleColor: uSparkleColor,
+      fade: uFade, worldCtr: uCtr,
     }).gsplat;
     return { gsplat };
   }
-);
-splats.updateGenerator();
+  );
+}
+
+// ---------- world manager: load, cache, crossfade ----------
+const FLIP_Q = [-Math.SQRT1_2, 0, 0, Math.SQRT1_2];   // Z-up → Y-up (-90° about X)
+const meshCache = new Map();   // url -> { mesh, uFade, world, ready }
+
+function getWorldEntry(world) {
+  let entry = meshCache.get(world.url);
+  if (entry) return entry;
+  const uFade = dyno.dynoFloat(0);
+  const uCtr = dyno.dynoVec3(new THREE.Vector3(...world.ctr));
+  const mesh = new SplatMesh({ url: world.url });
+  mesh.position.y = world.y;
+  if (world.flip) mesh.quaternion.set(...FLIP_Q);
+  mesh.objectModifier = buildWorldModifier(uFade, uCtr);
+  mesh.updateGenerator();
+  entry = { mesh, uFade, world, ready: mesh.initialized };
+  meshCache.set(world.url, entry);
+  return entry;
+}
+
+let current = null;                    // fully faded-in world
+let fadeFrom = null, fadeTo = null;    // in-flight crossfade pair
+let fadeProgress = 0;
+let switchToken = 0;
+
+const xfadeEl = document.getElementById("xfade");
+const xfadeValEl = document.getElementById("xfadeVal");
+const flipEl = document.getElementById("flip");
+
+function setXfadeUI(x) {
+  xfadeEl.value = x;
+  xfadeValEl.textContent = Math.round(x * 100) + "%";
+}
+
+async function switchWorld(world) {
+  const activeUrl = (fadeTo ?? current)?.world.url;
+  if (activeUrl === world.url) return;
+  const token = ++switchToken;
+  const entry = getWorldEntry(world);
+  await entry.ready;                   // splat file downloaded + parsed
+  if (token !== switchToken) return;   // superseded by a newer switch
+  if (fadeTo) finishFade();            // snap any in-flight fade first
+  fadeFrom = current;
+  fadeTo = entry;
+  fadeProgress = 0;
+  entry.uFade.value = 0;
+  scene.add(entry.mesh);
+  flipEl.checked = !!world.flip;
+}
+
+function finishFade() {
+  fadeTo.uFade.value = 1;
+  if (fadeFrom) { fadeFrom.uFade.value = 0; scene.remove(fadeFrom.mesh); }
+  current = fadeTo;
+  fadeFrom = null; fadeTo = null;
+  setXfadeUI(1);
+}
+
+function tickFade(dt) {
+  if (!fadeTo) return;
+  fadeProgress = Math.min(1, fadeProgress + dt / XFADE_SECONDS);
+  const t = fadeProgress * fadeProgress * (3 - 2 * fadeProgress);   // smoothstep
+  fadeTo.uFade.value = t;
+  if (fadeFrom) fadeFrom.uFade.value = 1 - t;
+  setXfadeUI(fadeProgress);
+  if (fadeProgress >= 1) finishFade();
+}
+
+// slider scrubs an in-flight crossfade (it keeps auto-advancing after)
+xfadeEl.addEventListener("input", () => {
+  if (fadeTo) fadeProgress = parseFloat(xfadeEl.value);
+});
+
+// flip toggle applies to the world being shown (or faded in)
+flipEl.addEventListener("change", e => {
+  const entry = fadeTo ?? current;
+  if (!entry) return;
+  if (e.target.checked) entry.mesh.quaternion.set(...FLIP_Q);
+  else entry.mesh.quaternion.set(0, 0, 0, 1);
+});
+
+switchWorld(WORLDS["default"]);
+if (PRELOAD_ALL) for (const w of Object.values(WORLDS)) getWorldEntry(w);
+
+// ---------- rekordbox bridge (WebSocket) ----------
+const npEl = document.getElementById("nowPlaying");
+function connectBridge() {
+  const ws = new WebSocket(WS_URL);
+  ws.addEventListener("open", () => { npEl.textContent = "bridge connected — waiting for track"; });
+  ws.addEventListener("message", ev => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type !== "nowPlaying") return;
+    const genre = (msg.genre ?? "").trim().toLowerCase();
+    const world = WORLDS[genre];
+    npEl.textContent = `${msg.title ?? "unknown"} [${msg.genre ?? "no genre"}]`
+      + (world ? "" : " — no world mapped");
+    if (world) switchWorld(world);
+  });
+  ws.addEventListener("close", () => {
+    npEl.textContent = "bridge offline — retrying…";
+    setTimeout(connectBridge, 2000);
+  });
+  ws.addEventListener("error", () => ws.close());
+}
+connectBridge();
 
 // ---------- mic + 3-band FFT analysis ----------
 let audioOn = false, analyser = null, freqData = null, actx = null;
@@ -568,8 +689,11 @@ renderer.setAnimationLoop(() => {
   if (capturing) return;               // capture routine drives its own renders
   if (controls.isLocked) updateMove(dt);
   updateAudio();
+  tickFade(dt);
   animateT.value = now / 1000;
-  splats.updateVersion();              // push uniform changes into the splat shader
+  // push uniform changes into the splat shaders of every world in the scene
+  for (const entry of meshCache.values())
+    if (entry.mesh.parent) entry.mesh.updateVersion();
   const p = camera.position;
   posEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`;
   renderer.render(scene, camera);
