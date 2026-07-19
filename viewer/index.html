@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Splat Explorer + Panorama</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d10; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    background: rgba(15,18,22,.82); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.08); border-radius: 12px;
+    padding: 12px 14px; color: #dfe6ee; font-size: 12.5px; line-height: 1.5;
+    max-width: 280px; user-select: none;
+  }
+  #hud h1 { font-size: 13px; margin: 0 0 6px; letter-spacing: .3px; }
+  #hud kbd {
+    background: #1d232b; border: 1px solid #2c343e; border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, monospace; font-size: 11px;
+  }
+  #hud .row { margin: 2px 0; }
+  #hud .muted { color: #8b96a3; }
+  #hud .pos { font-family: ui-monospace, monospace; color: #7fd6a3; }
+  #hud label { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
+  .meters { margin-top: 10px; display: grid; gap: 5px; }
+  .meters .m { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: #8b96a3; }
+  .meters .m span { width: 26px; text-transform: uppercase; letter-spacing: .5px; }
+  .mbar { flex: 1; height: 6px; background: #1b222b; border-radius: 4px; overflow: hidden; }
+  .mbar > i { display: block; height: 100%; width: 0%; transition: width .05s linear; }
+  #mLow  { background: linear-gradient(90deg,#2563eb,#38bdf8); }
+  #mMid  { background: linear-gradient(90deg,#8b5cf6,#c084fc); }
+  #mHigh { background: linear-gradient(90deg,#f59e0b,#fde68a); }
+
+  #controls { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; gap: 8px; align-items: center; }
+  .btn {
+    background: #1a2937; color: #eaf2ff; border: 1px solid #2b4964; border-radius: 10px;
+    padding: 10px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .btn:hover { background: #21384f; }
+  .btn.accent { background: #2563eb; border-color: #3b74f0; }
+  .btn.accent:hover { background: #2f6bf0; }
+  select { background: #1a2029; color: #dfe6ee; border: 1px solid #2c343e; border-radius: 8px; padding: 8px; font-size: 12px; }
+
+  #enter {
+    position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+    background: radial-gradient(60% 60% at 50% 40%, rgba(37,99,235,.15), rgba(11,13,16,.9));
+  }
+  #enter .card { text-align: center; color: #eef3f9; }
+  #enter h2 { font-weight: 700; margin: 0 0 6px; }
+  #enter p { color: #9fb0c0; margin: 4px 0 18px; }
+
+  #status {
+    position: fixed; top: 12px; right: 12px; z-index: 20;
+    background: rgba(15,18,22,.9); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 10px; padding: 10px 14px; color: #dfe6ee; font-size: 12.5px; display: none;
+  }
+  #status.show { display: block; }
+  #status .bar { height: 4px; background: #22303f; border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  #status .bar > i { display: block; height: 100%; width: 0%; background: #2563eb; transition: width .12s; }
+
+  #lookHint {
+    position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 6;
+    display: none; pointer-events: none;
+    background: rgba(15,18,22,.82); border: 1px solid rgba(255,255,255,.08);
+    border-radius: 999px; padding: 7px 14px; color: #cdd6e0; font-size: 12px;
+  }
+  #lookHint kbd { background: #1d232b; border: 1px solid #2c343e; border-radius: 4px; padding: 0 5px; font-family: ui-monospace, monospace; font-size: 11px; }
+  #shaderPanel {
+    position: fixed; top: 12px; right: 12px; z-index: 15; width: 236px;
+    max-height: calc(100vh - 24px); overflow-y: auto;
+    background: rgba(15,18,22,.86); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.08); border-radius: 12px;
+    padding: 10px 12px 12px; color: #dfe6ee; font-size: 12px; user-select: none;
+  }
+  .sp-sub {
+    margin: 14px 0 2px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08);
+    font-weight: 600; font-size: 11px; letter-spacing: .4px; color: #9fb0c0; text-transform: uppercase;
+  }
+  #shaderPanel.hidden { display: none; }
+  .sp-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 8px; }
+  .sp-head button { background: #1d232b; color: #9fb0c0; border: 1px solid #2c343e; border-radius: 6px; font-size: 10.5px; padding: 2px 8px; cursor: pointer; }
+  .sp-head button:hover { color: #eaf2ff; }
+  .srow { margin: 9px 0; }
+  .srow .lbl { display: flex; justify-content: space-between; font-size: 11px; color: #b7c2ce; margin-bottom: 3px; }
+  .srow .lbl b { color: #7fd6a3; font-family: ui-monospace, monospace; font-weight: 500; }
+  .srow input[type=range] { width: 100%; accent-color: #2563eb; }
+  .crow { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #b7c2ce; }
+  .crow input[type=color] { width: 34px; height: 22px; padding: 0; border: 1px solid #2c343e; border-radius: 5px; background: none; cursor: pointer; }
+  #crosshair { position: fixed; top: 50%; left: 50%; z-index: 5; width: 14px; height: 14px; margin: -7px 0 0 -7px; pointer-events: none; opacity: .5; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; }
+  #crosshair::before { left: 6px; top: 0; width: 2px; height: 14px; }
+  #crosshair::after { top: 6px; left: 0; height: 2px; width: 14px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="crosshair"></div>
+<div id="lookHint">Click the scene to look around · <kbd>Esc</kbd> to release</div>
+
+<div id="hud">
+  <h1>🛰️ Splat Explorer</h1>
+  <div class="row"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp; <kbd>E</kbd>/<kbd>Q</kbd> up/down</div>
+  <div class="row"><kbd>Space</kbd>/<kbd>Ctrl</kbd> also up/down &nbsp; · &nbsp; <kbd>Shift</kbd> boost</div>
+  <div class="row"><span class="muted">mouse to look</span></div>
+  <div class="row"><kbd>P</kbd> capture 360° panorama here</div>
+  <div class="row"><kbd>Esc</kbd> release mouse</div>
+  <div class="row muted" style="margin-top:8px">pos <span id="pos" class="pos">–</span></div>
+  <label><input type="checkbox" id="flip" checked /> Z-up → Y-up (Blender fix)</label>
+  <div class="srow" style="margin-top:10px">
+    <div class="lbl"><span>Fly speed</span><b id="flySpeedVal">6</b></div>
+    <input type="range" id="flySpeed" min="1" max="60" step="1" value="6" style="width:100%;accent-color:#2563eb" />
+  </div>
+  <div class="meters">
+    <div class="m"><span>low</span><div class="mbar"><i id="mLow"></i></div></div>
+    <div class="m"><span>mid</span><div class="mbar"><i id="mMid"></i></div></div>
+    <div class="m"><span>high</span><div class="mbar"><i id="mHigh"></i></div></div>
+  </div>
+</div>
+
+<div id="status"><span id="statusText">Working…</span><div class="bar"><i id="statusBar"></i></div></div>
+
+<div id="shaderPanel">
+  <div class="sp-head"><span>🎛️ Shader options</span><button id="shaderReset" title="Reset to defaults">reset</button></div>
+  <div id="shaderSliders"></div>
+</div>
+
+<div id="controls">
+  <button class="btn" id="mic" title="Use microphone as input">🎤 Enable mic</button>
+  <button class="btn" id="toggleShader" title="Show/hide shader controls">🎛️ Shader</button>
+  <select id="panoRes" title="Panorama resolution">
+    <option value="2048">2K · 2048×1024</option>
+    <option value="4096" selected>4K · 4096×2048</option>
+    <option value="8192">8K · 8192×4096</option>
+  </select>
+  <button class="btn accent" id="capture">📸 Capture Panorama (P)</button>
+  <button class="btn" id="reset">Reset view</button>
+</div>
+
+<div id="enter">
+  <div class="card">
+    <h2>Splat Explorer</h2>
+    <p>Fly through the scene, then capture a 360° panorama from any spot.</p>
+    <button class="btn accent" id="enterBtn" style="padding:12px 26px;font-size:15px">Click to enter</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { SparkRenderer, SplatMesh, dyno } from "@sparkjsdev/spark";
+import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
+
+const SPLAT_URL = "../gaussian/point_cloud_1.ply";
+
+// ---------- renderer / scene ----------
+const app = document.getElementById("app");
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d10);
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.02, 2000);
+camera.position.set(0, 0, 0);
+camera.lookAt(0, 0, -1);
+
+const spark = new SparkRenderer({ renderer });
+scene.add(spark);
+
+// ---------- load splat ----------
+const splats = new SplatMesh({ url: SPLAT_URL });
+applyFlip(true);
+scene.add(splats);
+
+function applyFlip(on) {
+  // Blender/PLY is Z-up; THREE is Y-up. -90° about X maps +Z -> +Y.
+  if (on) splats.quaternion.set(-0.7071067811865476, 0, 0, 0.7071067811865476);
+  else splats.quaternion.set(0, 0, 0, 1);
+}
+document.getElementById("flip").addEventListener("change", e => applyFlip(e.target.checked));
+
+// ---------- audio-reactive fractal shader (Spark dyno graph) ----------
+// Per-splat uniforms updated every frame from the mic FFT.
+const animateT   = dyno.dynoFloat(0);
+const uBass      = dyno.dynoFloat(0);
+const uMid       = dyno.dynoFloat(0);
+const uTreble    = dyno.dynoFloat(0);
+const uIntensity = dyno.dynoFloat(0.35);  // master reactivity
+// adjustable shader options (driven by sliders below)
+const uBassAmt   = dyno.dynoFloat(0.70);
+const uMidAmt    = dyno.dynoFloat(1.5);
+const uTrebleAmt = dyno.dynoFloat(0.56);
+const uWaveFreq  = dyno.dynoFloat(0.89);
+const uColorAmt  = dyno.dynoFloat(0.85);
+const uSparkleAmt= dyno.dynoFloat(0.35);
+const uSpeed     = dyno.dynoFloat(1.15);
+// color options
+const uMidColor     = dyno.dynoVec3(new THREE.Vector3(0.55, 0.25, 0.9));
+const uBassColor    = dyno.dynoVec3(new THREE.Vector3(0.15, 0.4, 1.0));
+const uSparkleColor = dyno.dynoVec3(new THREE.Vector3(1.0, 1.0, 1.0));
+
+splats.objectModifier = dyno.dynoBlock(
+  { gsplat: dyno.Gsplat },
+  { gsplat: dyno.Gsplat },
+  ({ gsplat }) => {
+    const d = new dyno.Dyno({
+      inTypes: {
+        gsplat: dyno.Gsplat, t: "float",
+        bass: "float", mid: "float", treble: "float", intensity: "float",
+        bassAmt: "float", midAmt: "float", trebleAmt: "float",
+        waveFreq: "float", colorAmt: "float", sparkleAmt: "float", speed: "float",
+        midColor: "vec3", bassColor: "vec3", sparkleColor: "vec3",
+      },
+      outTypes: { gsplat: dyno.Gsplat },
+      globals: () => [
+        dyno.unindent(`
+          vec3 hash3(vec3 p) {
+            return fract(sin(vec3(
+              dot(p, vec3(127.1, 311.7, 74.7)),
+              dot(p, vec3(269.5, 183.3, 246.1)),
+              dot(p, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
+          }
+          mat2 rot(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
+
+          // kaleidoscopic fractal folding -> pattern in [0,1], animated by t
+          float fractalField(vec3 pos, float t) {
+            float m = 100.0;
+            vec3 p = pos * 0.14;
+            for (int i = 0; i < 6; i++) {
+              p = abs(p) / clamp(abs(p.x * p.y), 0.3, 3.0) - 1.0;
+              p.xy *= rot(radians(90.0));
+              if (i > 1) m = min(m, length(p.xy) +
+                step(0.3, fract(p.z * 0.5 + t * 0.4 + float(i) * 0.2)));
+            }
+            return step(m, 0.5);
+          }
+        `),
+      ],
+      statements: ({ inputs, outputs }) => dyno.unindentLines(`
+        ${outputs.gsplat} = ${inputs.gsplat};
+
+        vec3 c      = ${inputs.gsplat}.center;
+        vec3 scales = ${inputs.gsplat}.scales;
+        vec4 rgba   = ${inputs.gsplat}.rgba;
+
+        float bass   = ${inputs.bass};
+        float mid    = ${inputs.mid};
+        float treble = ${inputs.treble};
+        float amp    = ${inputs.intensity};
+        float t      = ${inputs.t} * ${inputs.speed};
+
+        // scene centroid (raw PLY coords) so pulses stay in place
+        vec3 ctr = vec3(8.342, 8.314, 1.009);
+        vec3 rel  = c - ctr;
+        float dist = length(rel);
+        vec3 dir = dist > 1e-4 ? rel / dist : vec3(0.0);
+        float wf = ${inputs.waveFreq};
+
+        // --- LOWS: breathing SCALE about the centroid (pulse in place) ---
+        float grow = bass * ${inputs.bassAmt} * amp;
+        c = ctr + rel * (1.0 + 0.18 * grow);
+
+        // --- MIDS: concentric radial ripples (net-zero translation) ---
+        float ripple = sin(dist * wf * 3.0 - t * 3.0);
+        c += dir * ripple * mid * ${inputs.midAmt} * amp;
+
+        // --- HIGHS: per-splat shimmer / jitter (already localized) ---
+        vec3 n = hash3(floor(c * 3.0)) * 2.0 - 1.0;
+        c += n * treble * ${inputs.trebleAmt} * amp * (0.5 + 0.5 * sin(t * 30.0));
+
+        // --- color reaction ---
+        float f = fractalField(rel, t);
+        vec3 col = rgba.rgb;
+        col += ${inputs.midColor} * f * mid * ${inputs.colorAmt};       // mids paint fractal color
+        col += ${inputs.bassColor} * bass * 0.5 * ${inputs.colorAmt};   // lows add a glow
+        float sparkle = step(0.9, hash3(floor(c * 5.0) + floor(t * 20.0)).x)
+          * treble * ${inputs.sparkleAmt};
+        col = mix(col, ${inputs.sparkleColor}, clamp(sparkle, 0.0, 1.0));
+
+        ${outputs.gsplat}.center = c;
+        ${outputs.gsplat}.rgba   = vec4(col, rgba.a);
+        ${outputs.gsplat}.scales = scales * (1.0 + bass * 0.3 * amp + sparkle * 1.5);
+      `),
+    });
+
+    gsplat = d.apply({
+      gsplat, t: animateT,
+      bass: uBass, mid: uMid, treble: uTreble, intensity: uIntensity,
+      bassAmt: uBassAmt, midAmt: uMidAmt, trebleAmt: uTrebleAmt,
+      waveFreq: uWaveFreq, colorAmt: uColorAmt, sparkleAmt: uSparkleAmt, speed: uSpeed,
+      midColor: uMidColor, bassColor: uBassColor, sparkleColor: uSparkleColor,
+    }).gsplat;
+    return { gsplat };
+  }
+);
+splats.updateGenerator();
+
+// ---------- mic + 3-band FFT analysis ----------
+let audioOn = false, analyser = null, freqData = null, actx = null;
+let bBass = 0, bMid = 0, bTreble = 0;
+let bassRange = [1, 1], midRange = [1, 1], trebleRange = [1, 1];
+
+// audio-processing settings (driven by sliders)
+const audioCfg = {
+  bassGain: 1.0, midGain: 1.0, trebleGain: 1.1,
+  gate: 0.06, contrast: 2.6, attack: 0.9, release: 0.18, smoothing: 0.25,
+};
+
+const micBtn = document.getElementById("mic");
+const meterLow = document.getElementById("mLow");
+const meterMid = document.getElementById("mMid");
+const meterHigh = document.getElementById("mHigh");
+
+async function enableMic() {
+  if (audioOn) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === "suspended") await actx.resume();
+    const src = actx.createMediaStreamSource(stream);
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = audioCfg.smoothing;   // low = transients/beats come through
+    src.connect(analyser);                 // NOT to destination — avoids mic feedback
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+
+    const binHz = actx.sampleRate / analyser.fftSize;
+    const bin = hz => Math.max(1, Math.min(analyser.frequencyBinCount - 1, Math.round(hz / binHz)));
+    bassRange   = [bin(20),   bin(250)];
+    midRange    = [bin(250),  bin(2000)];
+    trebleRange = [bin(2000), bin(8000)];
+
+    audioOn = true;
+    micBtn.textContent = "🎤 Mic on";
+    micBtn.classList.add("accent");
+  } catch (e) {
+    console.error("mic error", e);
+    micBtn.textContent = "🎤 Mic blocked";
+  }
+}
+micBtn.addEventListener("click", enableMic);
+
+const avgBand = ([a, b]) => {
+  let s = 0; for (let i = a; i <= b; i++) s += freqData[i];
+  return s / (b - a + 1) / 255;            // 0..1
+};
+
+// noise-gate + contrast curve: kill the constant floor, expand so beats spike
+// and quiet passages fall to ~0 -> obvious pulsing instead of a steady hum.
+const shape = (v, gain) => {
+  v = Math.max(0, v * gain - audioCfg.gate);
+  return Math.min(1.6, Math.pow(v, audioCfg.contrast) * 2.6);
+};
+
+function updateAudio() {
+  if (!audioOn) return;
+  analyser.getByteFrequencyData(freqData);
+  const tB = shape(avgBand(bassRange),   audioCfg.bassGain);
+  const tM = shape(avgBand(midRange),    audioCfg.midGain);
+  const tT = shape(avgBand(trebleRange), audioCfg.trebleGain);
+  // envelope: fast attack (snap on the beat), quick release (visible pump)
+  const env = (p, x) => x > p ? p + (x - p) * audioCfg.attack : p + (x - p) * audioCfg.release;
+  bBass = env(bBass, tB); bMid = env(bMid, tM); bTreble = env(bTreble, tT);
+  uBass.value = bBass; uMid.value = bMid; uTreble.value = bTreble;
+  meterLow.style.width  = Math.min(100, bBass   * 66) + "%";
+  meterMid.style.width  = Math.min(100, bMid    * 66) + "%";
+  meterHigh.style.width = Math.min(100, bTreble * 66) + "%";
+}
+
+// ---------- shader control panel ----------
+const SHADER_PARAMS = [
+  { u: uIntensity, label: "Master reactivity", min: 0, max: 3,   step: 0.05, def: 0.35 },
+  { u: uBassAmt,   label: "Low pulse",         min: 0, max: 4,   step: 0.05, def: 0.70 },
+  { u: uMidAmt,    label: "Mid wave amount",   min: 0, max: 4,   step: 0.05, def: 1.5 },
+  { u: uWaveFreq,  label: "Wave frequency",    min: 0.02, max: 1.2, step: 0.01, def: 0.89 },
+  { u: uTrebleAmt, label: "High shimmer",      min: 0, max: 1.5, step: 0.02, def: 0.56 },
+  { u: uColorAmt,  label: "Color amount",      min: 0, max: 3,   step: 0.05, def: 0.85 },
+  { u: uSparkleAmt,label: "High sparkle",      min: 0, max: 3,   step: 0.05, def: 0.35 },
+  { u: uSpeed,     label: "Animation speed",   min: 0, max: 3,   step: 0.05, def: 1.15 },
+];
+
+const slidersEl = document.getElementById("shaderSliders");
+for (const p of SHADER_PARAMS) {
+  const row = document.createElement("div");
+  row.className = "srow";
+  const val = document.createElement("b");
+  val.textContent = p.def.toFixed(2);
+  const lbl = document.createElement("div");
+  lbl.className = "lbl";
+  const name = document.createElement("span");
+  name.textContent = p.label;
+  lbl.append(name, val);
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = p.min; input.max = p.max; input.step = p.step; input.value = p.def;
+  input.addEventListener("input", () => {
+    const v = parseFloat(input.value);
+    p.u.value = v;
+    val.textContent = v.toFixed(2);
+  });
+  p._input = input; p._val = val;
+  row.append(lbl, input);
+  slidersEl.append(row);
+}
+
+// color options
+const v2hex = v => "#" + [v.x, v.y, v.z]
+  .map(c => Math.round(Math.max(0, Math.min(1, c)) * 255).toString(16).padStart(2, "0")).join("");
+const hex2v = h => new THREE.Vector3(
+  parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255);
+
+const COLOR_PARAMS = [
+  { u: uMidColor,     label: "Mid / fractal color", def: new THREE.Vector3(0.55, 0.25, 0.9) },
+  { u: uBassColor,    label: "Low glow color",      def: new THREE.Vector3(0.15, 0.4, 1.0) },
+  { u: uSparkleColor, label: "Sparkle color",       def: new THREE.Vector3(1.0, 1.0, 1.0) },
+];
+
+for (const p of COLOR_PARAMS) {
+  const row = document.createElement("div");
+  row.className = "srow crow";
+  const name = document.createElement("span");
+  name.textContent = p.label;
+  const input = document.createElement("input");
+  input.type = "color";
+  input.value = v2hex(p.def);
+  input.addEventListener("input", () => { p.u.value = hex2v(input.value); });
+  p._input = input;
+  row.append(name, input);
+  slidersEl.append(row);
+}
+
+// audio processing settings
+const audDiv = document.createElement("div");
+audDiv.className = "sp-sub";
+audDiv.textContent = "Audio processing";
+slidersEl.append(audDiv);
+
+const AUDIO_PARAMS = [
+  { key: "bassGain",   label: "Low gain",      min: 0,    max: 6,    step: 0.1,  def: 1.0 },
+  { key: "midGain",    label: "Mid gain",      min: 0,    max: 6,    step: 0.1,  def: 1.0 },
+  { key: "trebleGain", label: "High gain",     min: 0,    max: 8,    step: 0.1,  def: 1.1 },
+  { key: "gate",       label: "Noise gate",    min: 0,    max: 0.4,  step: 0.01, def: 0.06 },
+  { key: "contrast",   label: "Contrast",      min: 0.5,  max: 4,    step: 0.1,  def: 2.6 },
+  { key: "attack",     label: "Attack",        min: 0.05, max: 1,    step: 0.01, def: 0.9 },
+  { key: "release",    label: "Release",       min: 0.02, max: 1,    step: 0.01, def: 0.18 },
+  { key: "smoothing",  label: "FFT smoothing", min: 0,    max: 0.95, step: 0.05, def: 0.25 },
+];
+
+for (const p of AUDIO_PARAMS) {
+  const row = document.createElement("div");
+  row.className = "srow";
+  const val = document.createElement("b");
+  val.textContent = p.def.toFixed(2);
+  const lbl = document.createElement("div");
+  lbl.className = "lbl";
+  const name = document.createElement("span");
+  name.textContent = p.label;
+  lbl.append(name, val);
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = p.min; input.max = p.max; input.step = p.step; input.value = p.def;
+  input.addEventListener("input", () => {
+    const v = parseFloat(input.value);
+    audioCfg[p.key] = v;
+    val.textContent = v.toFixed(2);
+    if (p.key === "smoothing" && analyser) analyser.smoothingTimeConstant = v;
+  });
+  p._input = input; p._val = val;
+  row.append(lbl, input);
+  slidersEl.append(row);
+}
+
+document.getElementById("shaderReset").addEventListener("click", () => {
+  for (const p of SHADER_PARAMS) {
+    p.u.value = p.def;
+    p._input.value = p.def;
+    p._val.textContent = p.def.toFixed(2);
+  }
+  for (const p of COLOR_PARAMS) {
+    p.u.value = p.def.clone();
+    p._input.value = v2hex(p.def);
+  }
+  for (const p of AUDIO_PARAMS) {
+    audioCfg[p.key] = p.def;
+    p._input.value = p.def;
+    p._val.textContent = p.def.toFixed(2);
+    if (p.key === "smoothing" && analyser) analyser.smoothingTimeConstant = p.def;
+  }
+});
+
+const shaderPanel = document.getElementById("shaderPanel");
+document.getElementById("toggleShader").addEventListener("click", () => {
+  shaderPanel.classList.toggle("hidden");
+});
+
+// ---------- controls (pointer-lock fly) ----------
+const controls = new PointerLockControls(camera, renderer.domElement);
+const enter = document.getElementById("enter");
+const enterBtn = document.getElementById("enterBtn");
+const lookHint = document.getElementById("lookHint");
+enterBtn.addEventListener("click", () => controls.lock());
+// Click the 3D view to (re-)enter look mode. UI elements sit above the canvas,
+// so clicking a button/slider won't trigger this.
+renderer.domElement.addEventListener("click", () => { if (!capturing) controls.lock(); });
+controls.addEventListener("lock", () => { enter.style.display = "none"; lookHint.style.display = "none"; });
+controls.addEventListener("unlock", () => { if (!capturing) lookHint.style.display = "block"; });
+
+const keys = new Set();
+const MOVE = { forward: 0, right: 0, up: 0 };
+addEventListener("keydown", e => {
+  keys.add(e.code);
+  if (e.code === "KeyP") { e.preventDefault(); capturePanorama(); }
+});
+addEventListener("keyup", e => keys.delete(e.code));
+
+let moveSpeed = 6;   // base units/sec, set by the Fly speed slider
+function updateMove(dt) {
+  const boost = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 4 : 1;
+  const speed = moveSpeed * boost * dt;
+  let f = 0, r = 0, u = 0;
+  if (keys.has("KeyW")) f += 1;
+  if (keys.has("KeyS")) f -= 1;
+  if (keys.has("KeyD")) r += 1;
+  if (keys.has("KeyA")) r -= 1;
+  if (keys.has("Space") || keys.has("KeyE")) u += 1;             // up
+  if (keys.has("ControlLeft") || keys.has("KeyC") || keys.has("KeyQ")) u -= 1;  // down
+  if (f) controls.moveForward(f * speed);
+  if (r) controls.moveRight(r * speed);
+  if (u) camera.position.y += u * speed;
+}
+
+document.getElementById("flySpeed").addEventListener("input", e => {
+  moveSpeed = parseFloat(e.target.value);
+  document.getElementById("flySpeedVal").textContent = moveSpeed.toFixed(0);
+});
+
+document.getElementById("reset").addEventListener("click", () => {
+  camera.position.set(0, 0, 0);
+  camera.lookAt(0, 0, -1);
+});
+
+// ---------- main loop ----------
+const posEl = document.getElementById("pos");
+let capturing = false;
+let last = performance.now();
+renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  if (capturing) return;               // capture routine drives its own renders
+  if (controls.isLocked) updateMove(dt);
+  updateAudio();
+  animateT.value = now / 1000;
+  splats.updateVersion();              // push uniform changes into the splat shader
+  const p = camera.position;
+  posEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`;
+  renderer.render(scene, camera);
+});
+
+addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------- panorama capture ----------
+const statusEl = document.getElementById("status");
+const statusText = document.getElementById("statusText");
+const statusBar = document.getElementById("statusBar");
+function setStatus(show, text, pct) {
+  statusEl.classList.toggle("show", show);
+  if (text != null) statusText.textContent = text;
+  if (pct != null) statusBar.style.width = pct + "%";
+}
+const nextFrame = () => new Promise(r => requestAnimationFrame(r));
+
+document.getElementById("capture").addEventListener("click", () => capturePanorama());
+
+// 6 cube faces: forward direction + a chosen up vector
+const FACES = [
+  { dir: [ 1, 0, 0], up: [0, 1, 0] }, // +X
+  { dir: [-1, 0, 0], up: [0, 1, 0] }, // -X
+  { dir: [ 0, 1, 0], up: [0, 0,-1] }, // +Y
+  { dir: [ 0,-1, 0], up: [0, 0, 1] }, // -Y
+  { dir: [ 0, 0, 1], up: [0, 1, 0] }, // +Z
+  { dir: [ 0, 0,-1], up: [0, 1, 0] }, // -Z
+];
+
+async function capturePanorama() {
+  if (capturing) return;
+  capturing = true;
+  const wasLocked = controls.isLocked;
+  if (wasLocked) controls.unlock();
+  enter.style.display = "none";
+
+  const outW = parseInt(document.getElementById("panoRes").value, 10);
+  const outH = outW / 2;
+  const FACE = outW >= 8192 ? 2048 : 1024;   // per-face cube resolution
+  setStatus(true, "Rendering cube faces… 0/6", 0);
+
+  const camPos = camera.position.clone();
+  const savedQuat = camera.quaternion.clone();
+  const savedFov = camera.fov, savedAspect = camera.aspect;
+
+  // dedicated square camera for the 6 faces
+  const faceCam = new THREE.PerspectiveCamera(90, 1, camera.near, camera.far);
+  faceCam.position.copy(camPos);
+
+  const rt = new THREE.WebGLRenderTarget(FACE, FACE, {
+    minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
+  });
+
+  const faces = [];   // { buf, R, U, F }
+  const tmp = new THREE.Vector3();
+
+  for (let i = 0; i < FACES.length; i++) {
+    const f = FACES[i];
+    faceCam.up.set(f.up[0], f.up[1], f.up[2]);
+    faceCam.position.copy(camPos);
+    faceCam.lookAt(camPos.x + f.dir[0], camPos.y + f.dir[1], camPos.z + f.dir[2]);
+    faceCam.updateMatrixWorld(true);
+
+    // Spark sorts splats asynchronously per-view — render a few frames so the
+    // sort settles for this orientation before we read pixels.
+    renderer.setRenderTarget(rt);
+    for (let k = 0; k < 4; k++) { renderer.render(scene, faceCam); await nextFrame(); }
+
+    const buf = new Uint8Array(FACE * FACE * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, FACE, FACE, buf);
+
+    // exact basis actually used by THREE for this face (render/sample consistency)
+    const R = new THREE.Vector3().setFromMatrixColumn(faceCam.matrixWorld, 0);
+    const U = new THREE.Vector3().setFromMatrixColumn(faceCam.matrixWorld, 1);
+    const F = tmp.setFromMatrixColumn(faceCam.matrixWorld, 2).clone().negate();
+    faces.push({ buf, R, U, F });
+
+    setStatus(true, `Rendering cube faces… ${i + 1}/6`, ((i + 1) / 6) * 45);
+  }
+
+  renderer.setRenderTarget(null);
+
+  // ---- reproject cube -> equirectangular ----
+  setStatus(true, "Stitching equirectangular…", 50);
+  await nextFrame();
+  const out = new Uint8ClampedArray(outW * outH * 4);
+  const d = new THREE.Vector3();
+
+  for (let y = 0; y < outH; y++) {
+    const lat = Math.PI / 2 - (y + 0.5) / outH * Math.PI;      // +90°..-90°
+    const cosLat = Math.cos(lat), sinLat = Math.sin(lat);
+    for (let x = 0; x < outW; x++) {
+      const lon = (x + 0.5) / outW * 2 * Math.PI - Math.PI;    // -180°..+180°
+      d.set(Math.sin(lon) * cosLat, sinLat, Math.cos(lon) * cosLat);
+
+      // pick dominant face
+      let best = -Infinity, bi = 0;
+      for (let i = 0; i < 6; i++) { const t = d.dot(faces[i].F); if (t > best) { best = t; bi = i; } }
+      const fc = faces[bi];
+      const t = d.dot(fc.F);
+      const u = d.dot(fc.R) / t;   // [-1,1] right
+      const v = d.dot(fc.U) / t;   // [-1,1] up
+      const [r, g, b] = sampleFace(fc.buf, FACE, u, v);
+
+      const o = (y * outW + x) * 4;
+      out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = 255;
+    }
+    if ((y & 63) === 0) { setStatus(true, "Stitching equirectangular…", 50 + (y / outH) * 45); await nextFrame(); }
+  }
+
+  // ---- encode + download ----
+  setStatus(true, "Encoding PNG…", 97);
+  await nextFrame();
+  const cv = document.createElement("canvas");
+  cv.width = outW; cv.height = outH;
+  cv.getContext("2d").putImageData(new ImageData(out, outW, outH), 0, 0);
+  cv.toBlob(blob => {
+    const a = document.createElement("a");
+    const p = camPos;
+    a.download = `panorama_${p.x.toFixed(1)}_${p.y.toFixed(1)}_${p.z.toFixed(1)}_${outW}.png`;
+    a.href = URL.createObjectURL(blob);
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }, "image/png");
+
+  // cleanup / restore
+  rt.dispose();
+  camera.position.copy(camPos);
+  camera.quaternion.copy(savedQuat);
+  camera.fov = savedFov; camera.aspect = savedAspect; camera.updateProjectionMatrix();
+  setStatus(true, "Saved ✔", 100);
+  setTimeout(() => setStatus(false), 1200);
+  capturing = false;
+  last = performance.now();
+}
+
+// bilinear sample of a face buffer. u,v in [-1,1] (v = up).
+// readRenderTargetPixels is bottom-up, so we flip rows.
+function sampleFace(buf, size, u, v) {
+  let fx = (u * 0.5 + 0.5) * size - 0.5;
+  let fy = (1 - (v * 0.5 + 0.5)) * size - 0.5;   // top-based row
+  fx = Math.max(0, Math.min(size - 1, fx));
+  fy = Math.max(0, Math.min(size - 1, fy));
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const x1 = Math.min(x0 + 1, size - 1), y1 = Math.min(y0 + 1, size - 1);
+  const tx = fx - x0, ty = fy - y0;
+  const px = (x, y) => { const by = size - 1 - y; const i = (by * size + x) * 4; return i; };
+  const a = px(x0, y0), b = px(x1, y0), c = px(x0, y1), e = px(x1, y1);
+  const lerp = (m, n, t) => m + (n - m) * t;
+  const out = [0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    const top = lerp(buf[a + k], buf[b + k], tx);
+    const bot = lerp(buf[c + k], buf[e + k], tx);
+    out[k] = lerp(top, bot, ty);
+  }
+  return out;
+}
+</script>
+</body>
+</html>
