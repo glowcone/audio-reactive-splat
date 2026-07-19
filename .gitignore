@@ -2,3 +2,7 @@ node_modules/
 .venv/
 out/
 .DS_Store
+dist/
+.wrangler/
+._*
+**/._*
